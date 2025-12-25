@@ -4,7 +4,7 @@
 
 This document describes the BitMart US OpenAPI interface specifications for spot trading, account management, and market data queries.
 
-**Base URL:** `https://api-cloud.bitmart.us/bm-us`
+**Prod Environment Base URL:** `https://api-cloud.bitmart.us`
 
 **API Version:** v1
 
@@ -35,7 +35,7 @@ signature = HMAC-SHA256(secretKey, timestamp + "#" + memo + "#" + body)
 ### Example
 
 ```bash
-curl -X GET 'https://api-cloud.bitmart.us/bm-us/api/v1/account' \
+curl -X GET 'https://api-cloud-us.bmexchangeaws-test.com/bm-us/api/v1/account' \
   -H 'X-BM-KEY: your_access_key' \
   -H 'X-BM-TIMESTAMP: 1702540800000' \
   -H 'X-BM-SIGN: your_signature'
@@ -768,6 +768,6 @@ Get order details by order ID.
 
 ## Change Log
 
-| Version | Date | Changes |
-|---------|------|---------|
-| v1.0.0 | 2024-01-15 | Initial release |
+| Version | Date       | Changes |
+|---------|------------|---------|
+| v1.0.0 | 2025-12-19 | Initial release |
