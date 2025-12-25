@@ -4,7 +4,7 @@
 
 本文档描述 BitMart US OpenAPI 接口规范，包括现货交易、账户管理和市场数据查询等功能。
 
-**基础URL：** `https://api-cloud.bitmart.us/bm-us`
+**生产环境基础URL：** `https://api-cloud.bitmart.us`
 
 **API版本：** v1
 
@@ -770,4 +770,4 @@ curl -X GET 'https://api-cloud.bitmart.us/bm-us/api/v1/account' \
 
 | 版本 | 日期 | 变更说明 |
 |------|------|----------|
-| v1.0.0 | 2024-01-15 | 初始版本 |
+| v1.0.0 | 2025-12-19 | 初始版本 |
