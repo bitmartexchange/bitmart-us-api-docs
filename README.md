@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document describes the BitMart US OpenAPI interface specifications for spot trading, account management, and market data queries.
+This document describes the BitMart US OpenAPI interface specifications for spot trading, account management, market data queries, **funding (crypto / ACH)**, and linked bank accounts.
 
 **Prod Environment Base URL:** `https://api-cloud.bitmart.us`
 
@@ -59,7 +59,7 @@ All API responses follow a unified format:
 |-------|------|-------------|
 | code | Integer | Response code, `0` indicates success |
 | message | String | Response message |
-| data | Object | Response data |
+| data | Object / Array | Response payload; shape depends on the endpoint (see each section) |
 
 ---
 
@@ -290,6 +290,54 @@ Get balance for a specific asset.
 | free | String | Available balance |
 | locked | String | Locked balance |
 | total | String | Total balance |
+
+---
+
+### Get Bank Accounts (ACH / linked external accounts)
+
+Returns **approved** linked bank (Plaid / external) accounts for the current user. Use `account_id` from this list as **`account_id`** in **ACH deposit** and **ACH withdraw** requests.
+
+**Endpoint:** `GET /api/v1/account/bank-accounts`
+
+**Authentication:** Required
+
+**Request Parameters:** None
+
+**Response Example:**
+
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": [
+    {
+      "account_number": "****1234",
+      "account_nickname": "Checking",
+      "routing_name": "ACH",
+      "account_holder_name": "Jane Doe",
+      "account_type": "checking",
+      "account_id": "17cbf404-bf52-4cc7-ad3d-6872ac5be5f4",
+      "limit": 10000,
+      "limit_type": null,
+      "is_default": true
+    }
+  ]
+}
+```
+
+**Response Fields (`data[]`):**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| account_number | String | Masked bank account number |
+| account_nickname | String | Account nickname |
+| routing_name | String | Routing / rail display name |
+| account_holder_name | String | Account holder name |
+| account_type | String | Account type (e.g. checking) |
+| account_id | String | **External account ID** — pass to `POST /deposit/ach` and `POST /withdraw/ach` as `account_id` |
+| limit | Number | Limit amount (if applicable) |
+| limit_type | Number | Limit type metadata (if applicable) |
+| is_default | Boolean | Whether this is the default linked account |
 
 ---
 
@@ -538,6 +586,248 @@ Create a new deposit address.
 
 ---
 
+## Funding APIs (Private)
+
+Crypto deposit address, **depositable asset catalog** (`queryAssets`), **ACH** deposit/withdraw and history, and **crypto withdraw**.  
+Typical flow: **`GET /account/bank-accounts`** → **`account_id`** → **`GET /queryAssets`** → pick **`asset`** → **`GET /deposit/address?asset=`** → **`POST /deposit/ach`** / **`POST /withdraw/ach`**.
+
+**Gateway path prefix (example):** `/bm-us/api/v1/...` — align with your deployment (same as account APIs).
+
+---
+
+### Query Depositable Assets
+
+Returns a flattened list of depositable assets (aligned with internal `GET /crypto/v1/queryAssets?transferType=deposit`). Each row’s **`asset`** is the value to use as the **`asset`** query parameter when calling **`GET /deposit/address`**.
+
+**Endpoint:** `GET /api/v1/queryAssets`
+
+**Authentication:** Required (read scope; exact permission name depends on gateway / key configuration)
+
+**Request Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| symbol | String | No | Optional filter (e.g. `BTC`) |
+
+**Response Example:**
+
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "list": [
+      {
+        "asset": "BTC"
+      }
+    ]
+  }
+}
+```
+
+**Response Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| list | Array | Flattened rows |
+| list[].asset | String | Display asset / network symbol for deposit; use as the **`asset`** query parameter for `GET /deposit/address` when present |
+
+**Rules:**
+
+- If the source row has **networks**, each network contributes one entry and **`asset`** is the network **`symbol`**.
+- If there are **no networks**, **`asset`** falls back to **`ticker`**.
+
+---
+
+### Get Crypto Deposit Address
+
+Returns the on-chain deposit **`address`** (and optional **`memo`**) for the given **`asset`**.
+
+**Endpoint:** `GET /api/v1/deposit/address`
+
+**Authentication:** Required (e.g. crypto deposit permission per gateway)
+
+**Request Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| asset | String | Yes | Display asset from `queryAssets` (e.g. `BTC`) or mapped symbol as supported by the platform |
+
+**Behavior (summary):**
+
+- **Stablecoins** (configured server-side, e.g. USDT/USDC): address is obtained via the **account funding RFQ** path (same capability as internal fiat fund RFQ), not the generic crypto deposit-address flow.
+- **Other assets:** the service **queries** an existing address first; if none, it **creates** one, then returns it.
+
+**Response Example:**
+
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "asset": "BTC",
+    "address": "bc1q...",
+    "memo": null
+  }
+}
+```
+
+**Response Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| asset | String | Display asset echoed or normalized for the client |
+| address | String | Deposit address |
+| memo | String | Memo / destination tag when required by the chain |
+
+---
+
+### Create ACH Deposit
+
+**Endpoint:** `POST /api/v1/deposit/ach`
+
+**Authentication:** Required
+
+**Request Body (JSON):**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| client_order_id | String | Yes | Client-supplied idempotency key |
+| account_id | String | Yes | From **`GET /account/bank-accounts`** → **`account_id`** |
+| amount | Number | Yes | Amount |
+| currency | String | No | Default **USD** |
+
+**Request Example:**
+
+```json
+{
+  "client_order_id": "ach-dep-1702540800000",
+  "account_id": "17cbf404-bf52-4cc7-ad3d-6872ac5be5f4",
+  "amount": 10.00,
+  "currency": "USD"
+}
+```
+
+**Response Example:**
+
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "transaction_id": "...",
+    "status": "PENDING"
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| transaction_id | String | Transaction / order reference |
+| status | String | Processing status |
+
+---
+
+### Create ACH Withdraw
+
+**Endpoint:** `POST /api/v1/withdraw/ach`
+
+**Authentication:** Required
+
+**Request Body (JSON):** Same shape as ACH deposit (`client_order_id`, `account_id`, `amount`, `currency`).
+
+**Response:** Same as **`FiatTransferOpenApiResponse`** (`transaction_id`, `status`).
+
+---
+
+### Get ACH Deposit History
+
+**Endpoint:** `GET /api/v1/deposit/ach/history`
+
+**Authentication:** Required
+
+**Request Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| page | Integer | No | Page number, default `1` |
+| page_size | Integer | No | Page size (max **100**) |
+| limit | Integer | No | Alias of `page_size` when `page_size` is omitted |
+
+**Response Example:**
+
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "list": [],
+    "total": 0,
+    "page": 1,
+    "page_size": 20
+  }
+}
+```
+
+---
+
+### Get ACH Withdraw History
+
+**Endpoint:** `GET /api/v1/withdraw/ach/history`
+
+**Authentication:** Required
+
+**Request Parameters:** Same as ACH deposit history.
+
+**Response:** Same envelope as ACH deposit history (`list`, `total`, `page`, `page_size`).
+
+---
+
+### Create Crypto Withdrawal
+
+**Endpoint:** `POST /api/v1/withdraw/crypto`
+
+**Authentication:** Required
+
+**Request Body (JSON):**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| client_order_id | String | Yes | Client order id |
+| coin | String | Yes | Asset / display coin (mapped server-side) |
+| address | String | Yes | On-chain withdrawal address |
+| amount | Number | Yes | Withdraw amount |
+| memo | String | No | Memo when required |
+| chain_full_code | String | No | Chain full code (internal withdraw metadata) |
+| chain_shot_code | String | No | Chain short code |
+| withdrawal_quote_id | String | No | If set, uses **quote** withdraw flow; if omitted, uses **withdrawNew** flow |
+
+**Request Example:**
+
+```json
+{
+  "client_order_id": "wd-crypto-1702540800000",
+  "coin": "BTC",
+  "address": "bc1q...",
+  "amount": 0.0001
+}
+```
+
+**Response Example:**
+
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "withdrawal_request_id": "...",
+    "status": "SUBMITTED"
+  }
+}
+```
+
+---
+
 ## Order APIs (Private)
 
 ### Create Order
@@ -771,3 +1061,4 @@ Get order details by order ID.
 | Version | Date       | Changes |
 |---------|------------|---------|
 | v1.0.0 | 2025-12-19 | Initial release |
+| v1.1.0 | 2026-04-15 | Added funding APIs (`queryAssets`, `deposit/address`, ACH & crypto withdraw) and `account/bank-accounts` |
