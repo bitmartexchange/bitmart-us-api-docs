@@ -2,7 +2,7 @@
 
 ## 概述
 
-本文档描述 BitMart US OpenAPI 接口规范，包括现货交易、账户管理和市场数据查询等功能。
+本文档描述 BitMart US OpenAPI 接口规范，包括现货交易、账户管理、市场数据查询、**充提（虚拟币 / ACH）**及**绑定银行账户**等功能。
 
 **生产环境基础URL：** `https://api-cloud.bitmart.us`
 
@@ -59,7 +59,7 @@ curl -X GET 'https://api-cloud.bitmart.us/bm-us/api/v1/account' \
 |------|------|------|
 | code | Integer | 响应码，`0` 表示成功 |
 | message | String | 响应消息 |
-| data | Object | 响应数据 |
+| data | Object / Array | 响应数据；具体结构因接口而异（见各章节） |
 
 ---
 
@@ -290,6 +290,54 @@ curl -X GET 'https://api-cloud.bitmart.us/bm-us/api/v1/account' \
 | free | String | 可用余额 |
 | locked | String | 冻结余额 |
 | total | String | 总余额 |
+
+---
+
+### 获取银行账户（ACH / 已绑定外部账户）
+
+查询当前用户**已审核通过**的绑定银行账户（Plaid / 外部账户）。请将返回的 **`account_id`** 作为 **`POST /deposit/ach`**、**`POST /withdraw/ach`** 请求体中的 **`account_id`**。
+
+**接口：** `GET /api/v1/account/bank-accounts`
+
+**认证：** 需要
+
+**请求参数：** 无
+
+**响应示例：**
+
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": [
+    {
+      "account_number": "****1234",
+      "account_nickname": "Checking",
+      "routing_name": "ACH",
+      "account_holder_name": "Jane Doe",
+      "account_type": "checking",
+      "account_id": "17cbf404-bf52-4cc7-ad3d-6872ac5be5f4",
+      "limit": 10000,
+      "limit_type": null,
+      "is_default": true
+    }
+  ]
+}
+```
+
+**响应字段说明（`data` 为数组，元素字段）：**
+
+| 字段 | 类型 | 描述 |
+|------|------|------|
+| account_number | String | 脱敏后的银行账号 |
+| account_nickname | String | 账户昵称 |
+| routing_name | String | 路由 / 通道展示名 |
+| account_holder_name | String | 持有人姓名 |
+| account_type | String | 账户类型（如 checking） |
+| account_id | String | **外部账户 ID**，用于 ACH 入金/出金请求的 **`account_id`** |
+| limit | Number | 限额（若有） |
+| limit_type | Number | 限额类型等元数据（若有） |
+| is_default | Boolean | 是否为默认账户 |
 
 ---
 
@@ -538,6 +586,248 @@ curl -X GET 'https://api-cloud.bitmart.us/bm-us/api/v1/account' \
 
 ---
 
+## 充提接口（私有）
+
+虚拟币**充值地址**、**可充值资产列表**（`queryAssets`）、**ACH** 入金/出金及记录查询、**虚拟币提现**。  
+推荐串联：**`GET /account/bank-accounts`** 取 **`account_id`** → **`GET /queryAssets`** 取 **`asset`** → **`GET /deposit/address?asset=`** → **`POST /deposit/ach`** / **`POST /withdraw/ach`**。
+
+**网关路径前缀（示例）：** `/bm-us/api/v1/...`，与账户类接口一致，以实际部署为准。
+
+---
+
+### 查询可充值资产列表
+
+返回已展平的可充值资产列表（数据源与站内 **`GET /crypto/v1/queryAssets?transferType=deposit`** 一致）。列表项中的 **`asset`** 作为 **`GET /deposit/address`** 的查询参数 **`asset`**。
+
+**接口：** `GET /api/v1/queryAssets`
+
+**认证：** 需要（读权限；具体权限名以网关 / API Key 配置为准）
+
+**请求参数：**
+
+| 参数 | 类型 | 必填 | 描述 |
+|------|------|------|------|
+| symbol | String | 否 | 可选筛选，例如 `BTC` |
+
+**响应示例：**
+
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "list": [
+      {
+        "asset": "BTC"
+      }
+    ]
+  }
+}
+```
+
+**响应字段说明：**
+
+| 字段 | 类型 | 描述 |
+|------|------|------|
+| list | Array | 展平后的资产行 |
+| list[].asset | String | 展示用资产 / 网络符号；调用 **`GET /deposit/address`** 时作为查询参数 **`asset`** |
+
+**规则说明：**
+
+- 若底层数据含 **networks**，按网络拆行，**`asset`** 取对应 **`symbol`**。
+- 若无 **networks**，**`asset`** 回退为 **`ticker`**。
+
+---
+
+### 获取虚拟币充值地址
+
+根据 **`asset`** 查询参数返回链上充值 **`address`**（及可选 **`memo`**）。
+
+**接口：** `GET /api/v1/deposit/address`
+
+**认证：** 需要（如网关配置的虚拟币充值权限）
+
+**请求参数：**
+
+| 参数 | 类型 | 必填 | 描述 |
+|------|------|------|------|
+| asset | String | 是 | 建议使用 `queryAssets` 返回的 **`asset`**（如 `BTC`）；也支持平台映射的其它展示名 |
+
+**行为摘要：**
+
+- **稳定币**（服务端配置，如 USDT/USDC）：通过**账户入金 RFQ** 能力获取充值地址（与站内法币 fund RFQ 一致），不走通用链上充值地址查询/创建分支。
+- **其它资产**：先**查询**已有地址；若无则**创建**后返回。
+
+**响应示例：**
+
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "asset": "BTC",
+    "address": "bc1q...",
+    "memo": null
+  }
+}
+```
+
+**响应字段说明：**
+
+| 字段 | 类型 | 描述 |
+|------|------|------|
+| asset | String | 展示用资产名（或与请求一致的归一化值） |
+| address | String | 充值地址 |
+| memo | String | 部分链需要的 memo / destination tag |
+
+---
+
+### 发起 ACH 入金
+
+**接口：** `POST /api/v1/deposit/ach`
+
+**认证：** 需要
+
+**请求体（JSON）：**
+
+| 字段 | 类型 | 必填 | 描述 |
+|------|------|------|------|
+| client_order_id | String | 是 | 客户端幂等单号 |
+| account_id | String | 是 | 来自 **`GET /account/bank-accounts`** 的 **`account_id`** |
+| amount | Number | 是 | 金额 |
+| currency | String | 否 | 默认 **USD** |
+
+**请求示例：**
+
+```json
+{
+  "client_order_id": "ach-dep-1702540800000",
+  "account_id": "17cbf404-bf52-4cc7-ad3d-6872ac5be5f4",
+  "amount": 10.00,
+  "currency": "USD"
+}
+```
+
+**响应示例：**
+
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "transaction_id": "...",
+    "status": "PENDING"
+  }
+}
+```
+
+| 字段 | 类型 | 描述 |
+|------|------|------|
+| transaction_id | String | 交易 / 订单引用 |
+| status | String | 处理状态 |
+
+---
+
+### 发起 ACH 出金
+
+**接口：** `POST /api/v1/withdraw/ach`
+
+**认证：** 需要
+
+**请求体（JSON）：** 与 ACH 入金相同（`client_order_id`、`account_id`、`amount`、`currency`）。
+
+**响应：** 与 **`FiatTransferOpenApiResponse`** 一致（`transaction_id`、`status`）。
+
+---
+
+### 查询 ACH 入金记录
+
+**接口：** `GET /api/v1/deposit/ach/history`
+
+**认证：** 需要
+
+**请求参数：**
+
+| 参数 | 类型 | 必填 | 描述 |
+|------|------|------|------|
+| page | Integer | 否 | 页码，默认 `1` |
+| page_size | Integer | 否 | 每页条数，最大 **100** |
+| limit | Integer | 否 | 与 `page_size` 等价别名（未传 `page_size` 时使用） |
+
+**响应示例：**
+
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "list": [],
+    "total": 0,
+    "page": 1,
+    "page_size": 20
+  }
+}
+```
+
+---
+
+### 查询 ACH 出金记录
+
+**接口：** `GET /api/v1/withdraw/ach/history`
+
+**认证：** 需要
+
+**请求参数：** 与 ACH 入金记录一致。
+
+**响应：** 与 ACH 入金记录相同结构（`list`、`total`、`page`、`page_size`）。
+
+---
+
+### 发起虚拟币提现
+
+**接口：** `POST /api/v1/withdraw/crypto`
+
+**认证：** 需要
+
+**请求体（JSON）：**
+
+| 字段 | 类型 | 必填 | 描述 |
+|------|------|------|------|
+| client_order_id | String | 是 | 客户端订单号 |
+| coin | String | 是 | 币种 / 展示名（服务端映射底层资产） |
+| address | String | 是 | 链上提现地址 |
+| amount | Number | 是 | 提现数量 |
+| memo | String | 否 | 需要时填写 memo |
+| chain_full_code | String | 否 | 链 full code |
+| chain_shot_code | String | 否 | 链短码 |
+| withdrawal_quote_id | String | 否 | 若填写则走 **quote** 提现流程；不传则走 **withdrawNew** 流程 |
+
+**请求示例：**
+
+```json
+{
+  "client_order_id": "wd-crypto-1702540800000",
+  "coin": "BTC",
+  "address": "bc1q...",
+  "amount": 0.0001
+}
+```
+
+**响应示例：**
+
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "withdrawal_request_id": "...",
+    "status": "SUBMITTED"
+  }
+}
+```
+
+---
+
 ## 订单接口（私有）
 
 ### 创建订单
@@ -771,3 +1061,4 @@ curl -X GET 'https://api-cloud.bitmart.us/bm-us/api/v1/account' \
 | 版本 | 日期 | 变更说明 |
 |------|------|----------|
 | v1.0.0 | 2025-12-19 | 初始版本 |
+| v1.1.0 | 2026-04-15 | 新增充提接口（`queryAssets`、`deposit/address`、ACH 与虚拟币提现）及 `account/bank-accounts` |
